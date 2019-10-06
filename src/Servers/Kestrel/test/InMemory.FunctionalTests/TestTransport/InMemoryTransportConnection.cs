@@ -48,11 +48,15 @@ namespace Microsoft.AspNetCore.Server.Kestrel.InMemory.FunctionalTests.TestTrans
 
         public ConnectionAbortedException AbortReason { get; private set; }
 
+        public Task WaitForCloseTask => _waitForCloseTcs.Task;
+
         public override void Abort(ConnectionAbortedException abortReason)
         {
             _logger.LogDebug(@"Connection id ""{ConnectionId}"" closing because: ""{Message}""", ConnectionId, abortReason?.Message);
 
             Input.Complete(abortReason);
+
+            OnClosed();
 
             AbortReason = abortReason;
         }
@@ -138,11 +142,6 @@ namespace Microsoft.AspNetCore.Server.Kestrel.InMemory.FunctionalTests.TestTrans
                 public override void Complete(Exception exception = null)
                 {
                     _reader.Complete(exception);
-                }
-
-                public override void OnWriterCompleted(Action<Exception, object> callback, object state)
-                {
-                    _reader.OnWriterCompleted(callback, state);
                 }
 
                 public override ValueTask<ReadResult> ReadAsync(CancellationToken cancellationToken = default)

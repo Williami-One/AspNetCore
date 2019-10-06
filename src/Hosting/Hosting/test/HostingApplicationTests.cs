@@ -7,7 +7,6 @@ using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
-using Microsoft.AspNetCore.Hosting.Internal;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Logging;
@@ -42,7 +41,7 @@ namespace Microsoft.AspNetCore.Hosting.Tests
         }
 
         [Fact]
-        public void CreateContextWithEnabledLoggerCreatesActivityAndSetsActivityIdInScope()
+        public void CreateContextWithEnabledLoggerCreatesActivityAndSetsActivityInScope()
         {
             // Arrange
             var logger = new LoggerWithScopes(isEnabled: true);
@@ -53,20 +52,49 @@ namespace Microsoft.AspNetCore.Hosting.Tests
 
             Assert.Single(logger.Scopes);
             var pairs = ((IReadOnlyList<KeyValuePair<string, object>>)logger.Scopes[0]).ToDictionary(p => p.Key, p => p.Value);
-            Assert.Equal(Activity.Current.Id, pairs["ActivityId"].ToString());
+            Assert.Equal(Activity.Current.Id, pairs["SpanId"].ToString());
+            Assert.Equal(Activity.Current.RootId, pairs["TraceId"].ToString());
+            Assert.Equal(string.Empty, pairs["ParentId"]?.ToString());
+        }
+
+        [Fact]
+        public void CreateContextWithEnabledLoggerAndRequestIdCreatesActivityAndSetsActivityInScope()
+        {
+            // Arrange
+
+            // Generate an id we can use for the request id header (in the correct format)
+            var activity = new Activity("IncomingRequest");
+            activity.Start();
+            var id = activity.Id;
+            activity.Stop();
+
+            var logger = new LoggerWithScopes(isEnabled: true);
+            var hostingApplication = CreateApplication(out var features, logger: logger, configure: context =>
+            {
+                context.Request.Headers["Request-Id"] = id;
+            });
+
+            // Act
+            var context = hostingApplication.CreateContext(features);
+
+            Assert.Single(logger.Scopes);
+            var pairs = ((IReadOnlyList<KeyValuePair<string, object>>)logger.Scopes[0]).ToDictionary(p => p.Key, p => p.Value);
+            Assert.Equal(Activity.Current.Id, pairs["SpanId"].ToString());
+            Assert.Equal(Activity.Current.RootId, pairs["TraceId"].ToString());
+            Assert.Equal(id, pairs["ParentId"].ToString());
         }
 
         [Fact]
         public void ActivityStopDoesNotFireIfNoListenerAttachedForStart()
         {
             // Arrange
-            var diagnosticSource = new DiagnosticListener("DummySource");
+            var diagnosticListener = new DiagnosticListener("DummySource");
             var logger = new LoggerWithScopes(isEnabled: true);
-            var hostingApplication = CreateApplication(out var features, diagnosticSource: diagnosticSource, logger: logger);
+            var hostingApplication = CreateApplication(out var features, diagnosticListener: diagnosticListener, logger: logger);
             var startFired = false;
             var stopFired = false;
 
-            diagnosticSource.Subscribe(new CallbackDiagnosticListener(pair =>
+            diagnosticListener.Subscribe(new CallbackDiagnosticListener(pair =>
             {
                 // This should not fire
                 if (pair.Key == "Microsoft.AspNetCore.Hosting.HttpRequestIn.Start")
@@ -90,10 +118,6 @@ namespace Microsoft.AspNetCore.Hosting.Tests
             // Act
             var context = hostingApplication.CreateContext(features);
 
-            Assert.Single(logger.Scopes);
-            var pairs = ((IReadOnlyList<KeyValuePair<string, object>>)logger.Scopes[0]).ToDictionary(p => p.Key, p => p.Value);
-            Assert.Equal(Activity.Current.Id, pairs["ActivityId"].ToString());
-
             hostingApplication.DisposeContext(context, exception: null);
 
             Assert.False(startFired);
@@ -104,14 +128,14 @@ namespace Microsoft.AspNetCore.Hosting.Tests
         [Fact]
         public void ActivityIsNotCreatedWhenIsEnabledForActivityIsFalse()
         {
-            var diagnosticSource = new DiagnosticListener("DummySource");
-            var hostingApplication = CreateApplication(out var features, diagnosticSource: diagnosticSource);
+            var diagnosticListener = new DiagnosticListener("DummySource");
+            var hostingApplication = CreateApplication(out var features, diagnosticListener: diagnosticListener);
 
             bool eventsFired = false;
             bool isEnabledActivityFired = false;
             bool isEnabledStartFired = false;
 
-            diagnosticSource.Subscribe(new CallbackDiagnosticListener(pair =>
+            diagnosticListener.Subscribe(new CallbackDiagnosticListener(pair =>
             {
                 eventsFired |= pair.Key.StartsWith("Microsoft.AspNetCore.Hosting.HttpRequestIn");
             }), (s, o, arg3) =>
@@ -138,14 +162,14 @@ namespace Microsoft.AspNetCore.Hosting.Tests
         [Fact]
         public void ActivityIsCreatedButNotLoggedWhenIsEnabledForActivityStartIsFalse()
         {
-            var diagnosticSource = new DiagnosticListener("DummySource");
-            var hostingApplication = CreateApplication(out var features, diagnosticSource: diagnosticSource);
+            var diagnosticListener = new DiagnosticListener("DummySource");
+            var hostingApplication = CreateApplication(out var features, diagnosticListener: diagnosticListener);
 
             bool eventsFired = false;
             bool isEnabledStartFired = false;
             bool isEnabledActivityFired = false;
 
-            diagnosticSource.Subscribe(new CallbackDiagnosticListener(pair =>
+            diagnosticListener.Subscribe(new CallbackDiagnosticListener(pair =>
             {
                 eventsFired |= pair.Key.StartsWith("Microsoft.AspNetCore.Hosting.HttpRequestIn");
             }), (s, o, arg3) =>
@@ -175,12 +199,12 @@ namespace Microsoft.AspNetCore.Hosting.Tests
         [Fact]
         public void ActivityIsCreatedAndLogged()
         {
-            var diagnosticSource = new DiagnosticListener("DummySource");
-            var hostingApplication = CreateApplication(out var features, diagnosticSource: diagnosticSource);
+            var diagnosticListener = new DiagnosticListener("DummySource");
+            var hostingApplication = CreateApplication(out var features, diagnosticListener: diagnosticListener);
 
             bool startCalled = false;
 
-            diagnosticSource.Subscribe(new CallbackDiagnosticListener(pair =>
+            diagnosticListener.Subscribe(new CallbackDiagnosticListener(pair =>
             {
                 if (pair.Key == "Microsoft.AspNetCore.Hosting.HttpRequestIn.Start")
                 {
@@ -200,11 +224,11 @@ namespace Microsoft.AspNetCore.Hosting.Tests
         [Fact]
         public void ActivityIsStoppedDuringStopCall()
         {
-            var diagnosticSource = new DiagnosticListener("DummySource");
-            var hostingApplication = CreateApplication(out var features, diagnosticSource: diagnosticSource);
+            var diagnosticListener = new DiagnosticListener("DummySource");
+            var hostingApplication = CreateApplication(out var features, diagnosticListener: diagnosticListener);
 
             bool endCalled = false;
-            diagnosticSource.Subscribe(new CallbackDiagnosticListener(pair =>
+            diagnosticListener.Subscribe(new CallbackDiagnosticListener(pair =>
             {
                 if (pair.Key == "Microsoft.AspNetCore.Hosting.HttpRequestIn.Stop")
                 {
@@ -225,11 +249,11 @@ namespace Microsoft.AspNetCore.Hosting.Tests
         [Fact]
         public void ActivityIsStoppedDuringUnhandledExceptionCall()
         {
-            var diagnosticSource = new DiagnosticListener("DummySource");
-            var hostingApplication = CreateApplication(out var features, diagnosticSource: diagnosticSource);
+            var diagnosticListener = new DiagnosticListener("DummySource");
+            var hostingApplication = CreateApplication(out var features, diagnosticListener: diagnosticListener);
 
             bool endCalled = false;
-            diagnosticSource.Subscribe(new CallbackDiagnosticListener(pair =>
+            diagnosticListener.Subscribe(new CallbackDiagnosticListener(pair =>
             {
                 if (pair.Key == "Microsoft.AspNetCore.Hosting.HttpRequestIn.Stop")
                 {
@@ -249,11 +273,11 @@ namespace Microsoft.AspNetCore.Hosting.Tests
         [Fact]
         public void ActivityIsAvailableDuringUnhandledExceptionCall()
         {
-            var diagnosticSource = new DiagnosticListener("DummySource");
-            var hostingApplication = CreateApplication(out var features, diagnosticSource: diagnosticSource);
+            var diagnosticListener = new DiagnosticListener("DummySource");
+            var hostingApplication = CreateApplication(out var features, diagnosticListener: diagnosticListener);
 
             bool endCalled = false;
-            diagnosticSource.Subscribe(new CallbackDiagnosticListener(pair =>
+            diagnosticListener.Subscribe(new CallbackDiagnosticListener(pair =>
             {
                 if (pair.Key == "Microsoft.AspNetCore.Hosting.UnhandledException")
                 {
@@ -271,10 +295,10 @@ namespace Microsoft.AspNetCore.Hosting.Tests
         [Fact]
         public void ActivityIsAvailibleDuringRequest()
         {
-            var diagnosticSource = new DiagnosticListener("DummySource");
-            var hostingApplication = CreateApplication(out var features, diagnosticSource: diagnosticSource);
+            var diagnosticListener = new DiagnosticListener("DummySource");
+            var hostingApplication = CreateApplication(out var features, diagnosticListener: diagnosticListener);
 
-            diagnosticSource.Subscribe(new CallbackDiagnosticListener(pair => { }),
+            diagnosticListener.Subscribe(new CallbackDiagnosticListener(pair => { }),
                 s =>
                 {
                     if (s.StartsWith("Microsoft.AspNetCore.Hosting.HttpRequestIn"))
@@ -293,10 +317,10 @@ namespace Microsoft.AspNetCore.Hosting.Tests
         [Fact]
         public void ActivityParentIdAndBaggeReadFromHeaders()
         {
-            var diagnosticSource = new DiagnosticListener("DummySource");
-            var hostingApplication = CreateApplication(out var features, diagnosticSource: diagnosticSource);
+            var diagnosticListener = new DiagnosticListener("DummySource");
+            var hostingApplication = CreateApplication(out var features, diagnosticListener: diagnosticListener);
 
-            diagnosticSource.Subscribe(new CallbackDiagnosticListener(pair => { }),
+            diagnosticListener.Subscribe(new CallbackDiagnosticListener(pair => { }),
                 s =>
                 {
                     if (s.StartsWith("Microsoft.AspNetCore.Hosting.HttpRequestIn"))
@@ -325,10 +349,10 @@ namespace Microsoft.AspNetCore.Hosting.Tests
         [Fact]
         public void ActivityTraceParentAndTraceStateFromHeaders()
         {
-            var diagnosticSource = new DiagnosticListener("DummySource");
-            var hostingApplication = CreateApplication(out var features, diagnosticSource: diagnosticSource);
+            var diagnosticListener = new DiagnosticListener("DummySource");
+            var hostingApplication = CreateApplication(out var features, diagnosticListener: diagnosticListener);
 
-            diagnosticSource.Subscribe(new CallbackDiagnosticListener(pair => { }),
+            diagnosticListener.Subscribe(new CallbackDiagnosticListener(pair => { }),
                 s =>
                 {
                     if (s.StartsWith("Microsoft.AspNetCore.Hosting.HttpRequestIn"))
@@ -361,11 +385,11 @@ namespace Microsoft.AspNetCore.Hosting.Tests
         [Fact]
         public void ActivityOnExportHookIsCalled()
         {
-            var diagnosticSource = new DiagnosticListener("DummySource");
-            var hostingApplication = CreateApplication(out var features, diagnosticSource: diagnosticSource);
+            var diagnosticListener = new DiagnosticListener("DummySource");
+            var hostingApplication = CreateApplication(out var features, diagnosticListener: diagnosticListener);
 
             bool onActivityImportCalled = false;
-            diagnosticSource.Subscribe(
+            diagnosticListener.Subscribe(
                 observer: new CallbackDiagnosticListener(pair => { }),
                 isEnabled: (s, o, _) => true,
                 onActivityImport: (activity, context) =>
@@ -398,19 +422,21 @@ namespace Microsoft.AspNetCore.Hosting.Tests
         }
 
         private static HostingApplication CreateApplication(out FeatureCollection features,
-            DiagnosticListener diagnosticSource = null, ILogger logger = null)
+            DiagnosticListener diagnosticListener = null, ILogger logger = null, Action<DefaultHttpContext> configure = null)
         {
             var httpContextFactory = new Mock<IHttpContextFactory>();
 
             features = new FeatureCollection();
             features.Set<IHttpRequestFeature>(new HttpRequestFeature());
-            httpContextFactory.Setup(s => s.Create(It.IsAny<IFeatureCollection>())).Returns(new DefaultHttpContext(features));
+            var context = new DefaultHttpContext(features);
+            configure?.Invoke(context);
+            httpContextFactory.Setup(s => s.Create(It.IsAny<IFeatureCollection>())).Returns(context);
             httpContextFactory.Setup(s => s.Dispose(It.IsAny<HttpContext>()));
 
             var hostingApplication = new HostingApplication(
                 ctx => Task.CompletedTask,
                 logger ?? new NullScopeLogger(),
-                diagnosticSource ?? new NoopDiagnosticSource(),
+                diagnosticListener ?? new NoopDiagnosticListener(),
                 httpContextFactory.Object);
 
             return hostingApplication;
@@ -453,7 +479,7 @@ namespace Microsoft.AspNetCore.Hosting.Tests
 
             public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter)
             {
-                
+
             }
 
             private class Scope : IDisposable
@@ -464,11 +490,11 @@ namespace Microsoft.AspNetCore.Hosting.Tests
             }
         }
 
-        private class NoopDiagnosticSource : DiagnosticListener
+        private class NoopDiagnosticListener : DiagnosticListener
         {
             private readonly bool _isEnabled;
 
-            public NoopDiagnosticSource(bool isEnabled = false) : base("DummyListener")
+            public NoopDiagnosticListener(bool isEnabled = false) : base("DummyListener")
             {
                 _isEnabled = isEnabled;
             }

@@ -35,20 +35,6 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Performance
 
         [Benchmark]
         [MethodImpl(MethodImplOptions.NoInlining)]
-        public IHttpSendFileFeature GetViaTypeOf_Last()
-        {
-            return (IHttpSendFileFeature)_collection[typeof(IHttpSendFileFeature)];
-        }
-
-        [Benchmark]
-        [MethodImpl(MethodImplOptions.NoInlining)]
-        public IHttpSendFileFeature GetViaGeneric_Last()
-        {
-            return _collection.Get<IHttpSendFileFeature>();
-        }
-
-        [Benchmark]
-        [MethodImpl(MethodImplOptions.NoInlining)]
         public object GetViaTypeOf_Custom()
         {
             return (IHttpCustomFeature)_collection[typeof(IHttpCustomFeature)];
@@ -78,7 +64,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Performance
 
         public HttpProtocolFeatureCollection()
         {
-            var memoryPool = MemoryPoolFactory.Create();
+            var memoryPool = SlabMemoryPoolFactory.Create();
             var options = new PipeOptions(memoryPool, readerScheduler: PipeScheduler.Inline, writerScheduler: PipeScheduler.Inline, useSynchronizationContext: false);
             var pair = DuplexPipe.CreateConnectionPair(options, options);
 
@@ -101,14 +87,6 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Performance
             http1Connection.Reset();
 
             _collection = http1Connection;
-        }
-
-        private class SendFileFeature : IHttpSendFileFeature
-        {
-            public Task SendFileAsync(string path, long offset, long? count, CancellationToken cancellation)
-            {
-                throw new NotImplementedException();
-            }
         }
 
         private interface IHttpCustomFeature

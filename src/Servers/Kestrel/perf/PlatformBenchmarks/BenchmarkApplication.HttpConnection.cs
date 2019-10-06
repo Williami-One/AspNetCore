@@ -99,9 +99,18 @@ namespace PlatformBenchmarks
 
                 if (state == State.Headers)
                 {
-                    if (Parser.ParseHeaders(new ParsingAdapter(this), buffer, out consumed, out examined, out int consumedBytes))
+                    var reader = new SequenceReader<byte>(buffer);
+                    var success = Parser.ParseHeaders(new ParsingAdapter(this), ref reader);
+
+                    consumed = reader.Position;
+                    if (success)
                     {
+                        examined = consumed;
                         state = State.Body;
+                    }
+                    else
+                    {
+                        examined = buffer.End;
                     }
 
                     buffer = buffer.Slice(consumed);
@@ -182,8 +191,8 @@ namespace PlatformBenchmarks
 
             public void OnHeadersComplete()
                 => RequestHandler.OnHeadersComplete();
-#if !NETCOREAPP3_0
-#error This is a .NET Core 3.0 application and needs to be compiled for <TargetFramework>netcoreapp3.0</TargetFramework>
+#if !NETCOREAPP
+#error This is a .NET Core 3.0 application and needs to be compiled for <TargetFramework>$(DefaultNetCoreTargetFramework)</TargetFramework>
 #endif
         }
     }

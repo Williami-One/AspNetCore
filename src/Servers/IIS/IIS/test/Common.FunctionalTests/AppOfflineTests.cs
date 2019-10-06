@@ -11,7 +11,6 @@ using Microsoft.AspNetCore.Server.IIS.FunctionalTests.Utilities;
 using Microsoft.AspNetCore.Server.IIS.FunctionalTests;
 using Microsoft.AspNetCore.Server.IntegrationTesting;
 using Microsoft.AspNetCore.Testing;
-using Microsoft.AspNetCore.Testing.xunit;
 using Microsoft.Extensions.Logging;
 using Xunit;
 using Microsoft.AspNetCore.Server.IntegrationTesting.IIS;
@@ -183,14 +182,10 @@ namespace Microsoft.AspNetCore.Server.IIS.FunctionalTests
         {
             var deploymentResult = await AssertStarts(HostingModel.OutOfProcess);
 
-            // Repeat dropping file and restarting multiple times
-            for (int i = 0; i < 5; i++)
-            {
-                AddAppOffline(deploymentResult.ContentRoot);
-                await AssertAppOffline(deploymentResult);
-                RemoveAppOffline(deploymentResult.ContentRoot);
-                await AssertRunning(deploymentResult);
-            }
+            AddAppOffline(deploymentResult.ContentRoot);
+            await AssertAppOffline(deploymentResult);
+            RemoveAppOffline(deploymentResult.ContentRoot);
+            await AssertRunning(deploymentResult);
 
             AddAppOffline(deploymentResult.ContentRoot);
             await AssertAppOffline(deploymentResult);

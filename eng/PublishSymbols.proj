@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk" DefaultTargets="RunPublishSymbols">
   <PropertyGroup>
     <!-- TFM doesn't matter. These settings are required to make NuGet happy so we can restore required MSBuild packages. -->
-    <TargetFramework>netcoreapp3.0</TargetFramework>
+    <TargetFramework>$(DefaultNetCoreTargetFramework)</TargetFramework>
     <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
     <ManifestsPath>artifacts\manifests\</ManifestsPath>
     <DisablePackageReferenceRestrictions>true</DisablePackageReferenceRestrictions>
@@ -54,9 +54,11 @@
 
   <Target Name="SetupPublishSymbols">
     <ItemGroup>
+      <SymbolFilesToPublish Include="$(SymbolDirectory)/**/*.pdb" />
       <SymbolPackagesToPublish Include="$(SymbolDirectory)/**/*.symbols.nupkg" />
     </ItemGroup>
 
+    <Message Importance="High" Text="Publishing symbol files to '$(SymbolServerDescription)':%0A  @(SymbolFilesToPublish, '%0A  ')" />
     <Message Importance="High" Text="Publishing symbol packages to '$(SymbolServerDescription)':%0A  @(SymbolPackagesToPublish, '%0A  ')"/>
   </Target>
 </Project>

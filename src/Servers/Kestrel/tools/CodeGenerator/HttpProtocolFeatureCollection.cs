@@ -13,7 +13,7 @@ namespace CodeGenerator
             {
                 "IHttpRequestFeature",
                 "IHttpResponseFeature",
-                "IResponseBodyPipeFeature",
+                "IHttpResponseBodyFeature",
                 "IRequestBodyPipeFeature",
                 "IHttpRequestIdentifierFeature",
                 "IServiceProvidersFeature",
@@ -45,18 +45,12 @@ namespace CodeGenerator
                 "IHttpMinRequestBodyDataRateFeature",
                 "IHttpMinResponseDataRateFeature",
                 "IHttpBodyControlFeature",
-                "IHttpResponseStartFeature"
-            };
-
-            var rareFeatures = new[]
-            {
-                "IHttpSendFileFeature",
+                "IHttpResetFeature"
             };
 
             var allFeatures = alwaysFeatures
                 .Concat(commonFeatures)
                 .Concat(sometimesFeatures)
-                .Concat(rareFeatures)
                 .ToArray();
 
             // NOTE: This list MUST always match the set of feature interfaces implemented by HttpProtocol.
@@ -65,7 +59,7 @@ namespace CodeGenerator
             {
                 "IHttpRequestFeature",
                 "IHttpResponseFeature",
-                "IResponseBodyPipeFeature",
+                "IHttpResponseBodyFeature",
                 "IRequestBodyPipeFeature",
                 "IHttpUpgradeFeature",
                 "IHttpRequestIdentifierFeature",
@@ -75,7 +69,6 @@ namespace CodeGenerator
                 "IHttpMaxRequestBodySizeFeature",
                 "IHttpMinRequestBodyDataRateFeature",
                 "IHttpBodyControlFeature",
-                "IHttpResponseStartFeature",
                 "IRouteValuesFeature",
                 "IEndpointFeature"
             };

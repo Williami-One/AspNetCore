@@ -62,6 +62,13 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets
                 throw new InvalidOperationException(SocketsStrings.TransportAlreadyBound);
             }
 
+            // Check if EndPoint is a FileHandleEndpoint before attempting to access EndPoint.AddressFamily
+            // since that will throw an NotImplementedException.
+            if (EndPoint is FileHandleEndPoint)
+            {
+                throw new NotSupportedException(SocketsStrings.FileHandleEndPointNotSupported);
+            }
+
             Socket listenSocket;
 
             // Unix domain sockets are unspecified
@@ -114,6 +121,11 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets
                     return connection;
                 }
                 catch (ObjectDisposedException)
+                {
+                    // A call was made to UnbindAsync/DisposeAsync just return null which signals we're done
+                    return null;
+                }
+                catch (SocketException e) when (e.SocketErrorCode == SocketError.OperationAborted)
                 {
                     // A call was made to UnbindAsync/DisposeAsync just return null which signals we're done
                     return null;

@@ -1,8 +1,10 @@
 // Copyright (c) .NET Foundation. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
+using System;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Components.Routing;
 using Microsoft.AspNetCore.Components.Server;
 using Microsoft.AspNetCore.Components.Server.BlazorPack;
@@ -23,8 +25,9 @@ namespace Microsoft.Extensions.DependencyInjection
         /// Adds Server-Side Blazor services to the service collection.
         /// </summary>
         /// <param name="services">The <see cref="IServiceCollection"/>.</param>
+        /// <param name="configure">A callback to configure <see cref="CircuitOptions"/>.</param>
         /// <returns>An <see cref="IServerSideBlazorBuilder"/> that can be used to further customize the configuration.</returns>
-        public static IServerSideBlazorBuilder AddServerSideBlazor(this IServiceCollection services)
+        public static IServerSideBlazorBuilder AddServerSideBlazor(this IServiceCollection services, Action<CircuitOptions> configure = null)
         {
             var builder = new DefaultServerSideBlazorBuilder(services);
 
@@ -52,8 +55,9 @@ namespace Microsoft.Extensions.DependencyInjection
             // user's configuration. So even if the user has multiple independent server-side
             // Components entrypoints, this lot is the same and repeated registrations are a no-op.
             services.TryAddEnumerable(ServiceDescriptor.Singleton<IPostConfigureOptions<StaticFileOptions>, ConfigureStaticFilesOptions>());
-            services.TryAddSingleton<CircuitFactory, DefaultCircuitFactory>();
-
+            services.TryAddSingleton<CircuitFactory>();
+            services.TryAddSingleton<ServerComponentDeserializer>();
+            services.TryAddSingleton<ServerComponentTypeCache>();
             services.TryAddSingleton<CircuitIdFactory>();
 
             services.TryAddScoped(s => s.GetRequiredService<ICircuitAccessor>().Circuit);
@@ -61,20 +65,20 @@ namespace Microsoft.Extensions.DependencyInjection
 
             services.TryAddSingleton<CircuitRegistry>();
 
-            // We explicitly take over the prerendering and components services here.
-            // We can't have two separate component implementations coexisting at the
-            // same time, so when you register components (Circuits) it takes over
-            // all the abstractions.
-            services.AddScoped<IComponentPrerenderer, CircuitPrerenderer>();
-
-            // Standard razor component services implementations
+            // Standard blazor hosting services implementations
             //
             // These intentionally replace the non-interactive versions included in MVC.
-            services.AddScoped<IUriHelper, RemoteUriHelper>();
+            services.AddScoped<NavigationManager, RemoteNavigationManager>();
             services.AddScoped<IJSRuntime, RemoteJSRuntime>();
             services.AddScoped<INavigationInterception, RemoteNavigationInterception>();
-            services.AddScoped<IComponentContext, RemoteComponentContext>();
-            services.AddScoped<AuthenticationStateProvider, FixedAuthenticationStateProvider>();
+            services.AddScoped<AuthenticationStateProvider, ServerAuthenticationStateProvider>();
+
+            services.TryAddEnumerable(ServiceDescriptor.Singleton<IConfigureOptions<CircuitOptions>, CircuitOptionsJSInteropDetailedErrorsConfiguration>());
+
+            if (configure != null)
+            {
+                services.Configure(configure);
+            }
 
             return builder;
         }

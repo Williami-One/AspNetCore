@@ -4,15 +4,19 @@
 using System;
 using System.IO;
 using System.Text.Encodings.Web;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Components;
-using Microsoft.AspNetCore.Components.RenderTree;
-using Microsoft.AspNetCore.Components.Server;
+using Microsoft.AspNetCore.Components.Rendering;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc.Rendering;
 using Microsoft.AspNetCore.Mvc.ViewFeatures.RazorComponents;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.JSInterop;
 using Microsoft.Net.Http.Headers;
 using Moq;
@@ -22,6 +26,11 @@ namespace Microsoft.AspNetCore.Mvc.ViewFeatures.Test
 {
     public class HtmlHelperComponentExtensionsTests
     {
+        private const string PrerenderedServerComponentPattern = "^<!--Blazor:(?<preamble>.*?)-->(?<content>.+?)<!--Blazor:(?<epilogue>.*?)-->$";
+        private const string ServerComponentPattern = "^<!--Blazor:(.*?)-->$";
+
+        private static readonly IDataProtectionProvider _dataprotectorProvider = new EphemeralDataProtectionProvider();
+
         [Fact]
         public async Task CanRender_ParameterlessComponent()
         {
@@ -30,12 +39,132 @@ namespace Microsoft.AspNetCore.Mvc.ViewFeatures.Test
             var writer = new StringWriter();
 
             // Act
-            var result = await helper.RenderStaticComponentAsync<TestComponent>();
+            var result = await helper.RenderComponentAsync<TestComponent>(RenderMode.Static);
             result.WriteTo(writer, HtmlEncoder.Default);
             var content = writer.ToString();
 
             // Assert
             Assert.Equal("<h1>Hello world!</h1>", content);
+        }
+
+        [Fact]
+        public async Task CanRender_ParameterlessComponent_ServerMode()
+        {
+            // Arrange
+            var helper = CreateHelper();
+            var writer = new StringWriter();
+            var protector = _dataprotectorProvider.CreateProtector(ServerComponentSerializationSettings.DataProtectionProviderPurpose)
+                .ToTimeLimitedDataProtector();
+
+            // Act
+            var result = await helper.RenderComponentAsync<TestComponent>(RenderMode.Server);
+            result.WriteTo(writer, HtmlEncoder.Default);
+            var content = writer.ToString();
+            var match = Regex.Match(content, ServerComponentPattern);
+
+            // Assert
+            Assert.True(match.Success);
+            var marker = JsonSerializer.Deserialize<ServerComponentMarker>(match.Groups[1].Value, ServerComponentSerializationSettings.JsonSerializationOptions);
+            Assert.Equal(0, marker.Sequence);
+            Assert.Null(marker.PrerenderId);
+            Assert.NotNull(marker.Descriptor);
+            Assert.Equal("server", marker.Type);
+
+            var unprotectedServerComponent = protector.Unprotect(marker.Descriptor);
+            var serverComponent = JsonSerializer.Deserialize<ServerComponent>(unprotectedServerComponent, ServerComponentSerializationSettings.JsonSerializationOptions);
+            Assert.Equal(0, serverComponent.Sequence);
+            Assert.Equal(typeof(TestComponent).Assembly.GetName().Name, serverComponent.AssemblyName);
+            Assert.Equal(typeof(TestComponent).FullName, serverComponent.TypeName);
+            Assert.NotEqual(Guid.Empty, serverComponent.InvocationId);
+        }
+
+        [Fact]
+        public async Task CanPrerender_ParameterlessComponent_ServerMode()
+        {
+            // Arrange
+            var helper = CreateHelper();
+            var writer = new StringWriter();
+            var protector = _dataprotectorProvider.CreateProtector(ServerComponentSerializationSettings.DataProtectionProviderPurpose)
+                .ToTimeLimitedDataProtector();
+
+            // Act
+            var result = await helper.RenderComponentAsync<TestComponent>(RenderMode.ServerPrerendered);
+            result.WriteTo(writer, HtmlEncoder.Default);
+            var content = writer.ToString();
+            var match = Regex.Match(content, PrerenderedServerComponentPattern, RegexOptions.Multiline);
+
+            // Assert
+            Assert.True(match.Success);
+            var preamble = match.Groups["preamble"].Value;
+            var preambleMarker = JsonSerializer.Deserialize<ServerComponentMarker>(preamble, ServerComponentSerializationSettings.JsonSerializationOptions);
+            Assert.Equal(0, preambleMarker.Sequence);
+            Assert.NotNull(preambleMarker.PrerenderId);
+            Assert.NotNull(preambleMarker.Descriptor);
+            Assert.Equal("server", preambleMarker.Type);
+
+            var unprotectedServerComponent = protector.Unprotect(preambleMarker.Descriptor);
+            var serverComponent = JsonSerializer.Deserialize<ServerComponent>(unprotectedServerComponent, ServerComponentSerializationSettings.JsonSerializationOptions);
+            Assert.NotEqual(default, serverComponent);
+            Assert.Equal(0, serverComponent.Sequence);
+            Assert.Equal(typeof(TestComponent).Assembly.GetName().Name, serverComponent.AssemblyName);
+            Assert.Equal(typeof(TestComponent).FullName, serverComponent.TypeName);
+            Assert.NotEqual(Guid.Empty, serverComponent.InvocationId);
+
+            var prerenderedContent = match.Groups["content"].Value;
+            Assert.Equal("<h1>Hello world!</h1>", prerenderedContent);
+
+            var epilogue = match.Groups["epilogue"].Value;
+            var epilogueMarker = JsonSerializer.Deserialize<ServerComponentMarker>(epilogue, ServerComponentSerializationSettings.JsonSerializationOptions);
+            Assert.Equal(preambleMarker.PrerenderId, epilogueMarker.PrerenderId);
+            Assert.Null(epilogueMarker.Sequence);
+            Assert.Null(epilogueMarker.Descriptor);
+            Assert.Null(epilogueMarker.Type);
+        }
+
+        [Fact]
+        public async Task CanRenderMultipleServerComponents()
+        {
+            // Arrange
+            var helper = CreateHelper();
+            var firstWriter = new StringWriter();
+            var secondWriter = new StringWriter();
+            var protector = _dataprotectorProvider.CreateProtector(ServerComponentSerializationSettings.DataProtectionProviderPurpose)
+                .ToTimeLimitedDataProtector();
+
+            // Act
+            var firstResult = await helper.RenderComponentAsync<TestComponent>(RenderMode.ServerPrerendered);
+            firstResult.WriteTo(firstWriter, HtmlEncoder.Default);
+            var firstComponent = firstWriter.ToString();
+            var firstMatch = Regex.Match(firstComponent, PrerenderedServerComponentPattern, RegexOptions.Multiline);
+
+            var secondResult = await helper.RenderComponentAsync<TestComponent>(RenderMode.Server);
+            secondResult.WriteTo(secondWriter, HtmlEncoder.Default);
+            var secondComponent = secondWriter.ToString();
+            var secondMatch = Regex.Match(secondComponent, ServerComponentPattern);
+
+            // Assert
+            Assert.True(firstMatch.Success);
+            var preamble = firstMatch.Groups["preamble"].Value;
+            var preambleMarker = JsonSerializer.Deserialize<ServerComponentMarker>(preamble, ServerComponentSerializationSettings.JsonSerializationOptions);
+            Assert.Equal(0, preambleMarker.Sequence);
+            Assert.NotNull(preambleMarker.Descriptor);
+
+            var unprotectedFirstServerComponent = protector.Unprotect(preambleMarker.Descriptor);
+            var firstServerComponent = JsonSerializer.Deserialize<ServerComponent>(unprotectedFirstServerComponent, ServerComponentSerializationSettings.JsonSerializationOptions);
+            Assert.Equal(0, firstServerComponent.Sequence);
+            Assert.NotEqual(Guid.Empty, firstServerComponent.InvocationId);
+
+            Assert.True(secondMatch.Success);
+            var marker = secondMatch.Groups[1].Value;
+            var markerMarker = JsonSerializer.Deserialize<ServerComponentMarker>(marker, ServerComponentSerializationSettings.JsonSerializationOptions);
+            Assert.Equal(1, markerMarker.Sequence);
+            Assert.NotNull(markerMarker.Descriptor);
+
+            var unprotectedSecondServerComponent = protector.Unprotect(markerMarker.Descriptor);
+            var secondServerComponent = JsonSerializer.Deserialize<ServerComponent>(unprotectedSecondServerComponent, ServerComponentSerializationSettings.JsonSerializationOptions);
+            Assert.Equal(1, secondServerComponent.Sequence);
+
+            Assert.Equal(firstServerComponent.InvocationId, secondServerComponent.InvocationId);
         }
 
         [Fact]
@@ -46,15 +175,78 @@ namespace Microsoft.AspNetCore.Mvc.ViewFeatures.Test
             var writer = new StringWriter();
 
             // Act
-            var result = await helper.RenderStaticComponentAsync<GreetingComponent>(new
-            {
-                Name = "Steve"
-            });
+            var result = await helper.RenderComponentAsync<GreetingComponent>(
+                RenderMode.Static,
+                new
+                {
+                    Name = "Steve"
+                });
             result.WriteTo(writer, HtmlEncoder.Default);
             var content = writer.ToString();
 
             // Assert
             Assert.Equal("<p>Hello Steve!</p>", content);
+        }
+
+        [Theory]
+        [InlineData(RenderMode.Server, "Server components with parameters are not supported.")]
+        [InlineData(RenderMode.ServerPrerendered, "Prerendering server components with parameters is not supported.")]
+        public async Task ComponentWithParametersObject_ThrowsInvalidOperationExceptionForServerRenderModes(
+            RenderMode renderMode,
+            string expectedMessage)
+        {
+            // Arrange
+            var helper = CreateHelper();
+            var writer = new StringWriter();
+
+            // Act & Assert
+            var result = await Assert.ThrowsAsync<InvalidOperationException>(() => helper.RenderComponentAsync<GreetingComponent>(
+                renderMode,
+                new
+                {
+                    Name = "Steve"
+                }));
+            Assert.Equal(expectedMessage, result.Message);
+        }
+
+        [Fact]
+        public async Task ComponentWithInvalidRenderMode_Throws()
+        {
+            // Arrange
+            var helper = CreateHelper();
+            var writer = new StringWriter();
+
+            // Act & Assert
+            var result = await Assert.ThrowsAsync<ArgumentException>(() => helper.RenderComponentAsync<GreetingComponent>(
+                default,
+                new
+                {
+                    Name = "Steve"
+                }));
+            Assert.Equal("renderMode", result.ParamName);
+        }
+
+        [Fact]
+        public async Task RenderComponent_DoesNotInvokeOnAfterRenderInComponent()
+        {
+            // Arrange
+            var helper = CreateHelper();
+            var writer = new StringWriter();
+
+            // Act
+            var state = new OnAfterRenderState();
+            var result = await helper.RenderComponentAsync<OnAfterRenderComponent>(
+                RenderMode.Static,
+                new
+                {
+                    State = state
+                });
+
+            result.WriteTo(writer, HtmlEncoder.Default);
+
+            // Assert
+            Assert.Equal("<p>Hello</p>", writer.ToString());
+            Assert.False(state.OnAfterRenderRan);
         }
 
         [Fact]
@@ -64,10 +256,12 @@ namespace Microsoft.AspNetCore.Mvc.ViewFeatures.Test
             var helper = CreateHelper();
 
             // Act & Assert
-            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => helper.RenderStaticComponentAsync<ExceptionComponent>(new
-            {
-                IsAsync = false
-            }));
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => helper.RenderComponentAsync<ExceptionComponent>(
+                RenderMode.Static,
+                new
+                {
+                    IsAsync = false
+                }));
 
             // Assert
             Assert.Equal("Threw an exception synchronously", exception.Message);
@@ -80,10 +274,12 @@ namespace Microsoft.AspNetCore.Mvc.ViewFeatures.Test
             var helper = CreateHelper();
 
             // Act & Assert
-            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => helper.RenderStaticComponentAsync<ExceptionComponent>(new
-            {
-                IsAsync = true
-            }));
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => helper.RenderComponentAsync<ExceptionComponent>(
+                RenderMode.Static,
+                new
+                {
+                    IsAsync = true
+                }));
 
             // Assert
             Assert.Equal("Threw an exception asynchronously", exception.Message);
@@ -96,10 +292,13 @@ namespace Microsoft.AspNetCore.Mvc.ViewFeatures.Test
             var helper = CreateHelper();
 
             // Act & Assert
-            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => helper.RenderStaticComponentAsync<ExceptionComponent>(new
-            {
-                JsInterop = true
-            }));
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => helper.RenderComponentAsync<ExceptionComponent>(
+                RenderMode.Static,
+                new
+                {
+                    JsInterop = true
+                }
+            ));
 
             // Assert
             Assert.Equal("JavaScript interop calls cannot be issued during server-side prerendering, " +
@@ -125,11 +324,13 @@ namespace Microsoft.AspNetCore.Mvc.ViewFeatures.Test
             var writer = new StringWriter();
 
             // Act
-            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => helper.RenderStaticComponentAsync<RedirectComponent>(new
-            {
-                RedirectUri = "http://localhost/redirect"
-            }));
-            
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => helper.RenderComponentAsync<RedirectComponent>(
+                RenderMode.Static,
+                new
+                {
+                    RedirectUri = "http://localhost/redirect"
+                }));
+
             Assert.Equal("A navigation command was attempted during prerendering after the server already started sending the response. " +
                             "Navigation commands can not be issued during server-side prerendering after the response from the server has started. Applications must buffer the" +
                             "reponse and avoid using features like FlushAsync() before all components on the page have been rendered to prevent failed navigation commands.",
@@ -149,10 +350,12 @@ namespace Microsoft.AspNetCore.Mvc.ViewFeatures.Test
             var helper = CreateHelper(ctx);
 
             // Act
-            await helper.RenderStaticComponentAsync<RedirectComponent>(new
-            {
-                RedirectUri = "http://localhost/redirect"
-            });
+            await helper.RenderComponentAsync<RedirectComponent>(
+                RenderMode.Static,
+                new
+                {
+                    RedirectUri = "http://localhost/redirect"
+                });
 
             // Assert
             Assert.Equal(302, ctx.Response.StatusCode);
@@ -209,7 +412,7 @@ namespace Microsoft.AspNetCore.Mvc.ViewFeatures.Test
 </table>";
 
             // Act
-            var result = await helper.RenderStaticComponentAsync<AsyncComponent>();
+            var result = await helper.RenderComponentAsync<AsyncComponent>(RenderMode.Static);
             result.WriteTo(writer, HtmlEncoder.Default);
             var content = writer.ToString();
 
@@ -221,9 +424,12 @@ namespace Microsoft.AspNetCore.Mvc.ViewFeatures.Test
         {
             var services = new ServiceCollection();
             services.AddSingleton(HtmlEncoder.Default);
-            services.AddSingleton<IJSRuntime,UnsupportedJavaScriptRuntime>();
-            services.AddSingleton<IUriHelper,HttpUriHelper>();
+            services.AddSingleton<ServerComponentSerializer>();
+            services.AddSingleton(_dataprotectorProvider);
+            services.AddSingleton<IJSRuntime, UnsupportedJavaScriptRuntime>();
+            services.AddSingleton<NavigationManager, HttpNavigationManager>();
             services.AddSingleton<StaticComponentRenderer>();
+            services.AddSingleton<ILoggerFactory, NullLoggerFactory>();
 
             configureServices?.Invoke(services);
 
@@ -248,12 +454,12 @@ namespace Microsoft.AspNetCore.Mvc.ViewFeatures.Test
         {
             private RenderHandle _renderHandle;
 
-            public void Configure(RenderHandle renderHandle)
+            public void Attach(RenderHandle renderHandle)
             {
                 _renderHandle = renderHandle;
             }
 
-            public Task SetParametersAsync(ParameterCollection parameters)
+            public Task SetParametersAsync(ParameterView parameters)
             {
                 _renderHandle.Render(builder =>
                 {
@@ -268,23 +474,23 @@ namespace Microsoft.AspNetCore.Mvc.ViewFeatures.Test
 
         private class RedirectComponent : ComponentBase
         {
-            [Inject] IUriHelper UriHelper { get; set; }
+            [Inject] NavigationManager NavigationManager { get; set; }
 
             [Parameter] public string RedirectUri { get; set; }
 
             [Parameter] public bool Force { get; set; }
 
-            protected override void OnInit()
+            protected override void OnInitialized()
             {
-                UriHelper.NavigateTo(RedirectUri, Force);
+                NavigationManager.NavigateTo(RedirectUri, Force);
             }
         }
 
         private class ExceptionComponent : ComponentBase
         {
-            [Parameter] bool IsAsync { get; set; }
+            [Parameter] public bool IsAsync { get; set; }
 
-            [Parameter] bool JsInterop { get; set; }
+            [Parameter] public bool JsInterop { get; set; }
 
             [Inject] IJSRuntime JsRuntime { get; set; }
 
@@ -305,6 +511,26 @@ namespace Microsoft.AspNetCore.Mvc.ViewFeatures.Test
                     throw new InvalidOperationException("Threw an exception asynchronously");
                 }
             }
+        }
+
+        private class OnAfterRenderComponent : ComponentBase
+        {
+            [Parameter] public OnAfterRenderState State { get; set; }
+
+            protected override void OnAfterRender(bool firstRender)
+            {
+                State.OnAfterRenderRan = true;
+            }
+
+            protected override void BuildRenderTree(RenderTreeBuilder builder)
+            {
+                builder.AddMarkupContent(0, "<p>Hello</p>");
+            }
+        }
+
+        private class OnAfterRenderState
+        {
+            public bool OnAfterRenderRan { get; set; }
         }
 
         private class GreetingComponent : ComponentBase

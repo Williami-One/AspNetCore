@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Http;
@@ -12,7 +13,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Testing;
-using Microsoft.AspNetCore.Testing.xunit;
 using Xunit;
 
 namespace Microsoft.AspNetCore.Server.HttpSys
@@ -30,6 +30,30 @@ namespace Microsoft.AspNetCore.Server.HttpSys
             {
                 string response = await SendRequestAsync(address);
                 Assert.Equal(string.Empty, response);
+            }
+        }
+
+        [ConditionalFact]
+        public async Task Server_SetQueueName_Success()
+        {
+            string address;
+            var queueName = Guid.NewGuid().ToString();
+            using (Utilities.CreateHttpServer(out address, httpContext =>
+            {
+                return Task.FromResult(0);
+            }, options =>
+            {
+                options.RequestQueueName = queueName;
+            }))
+            {
+                var psi = new ProcessStartInfo("netsh", "http show servicestate view=requestq")
+                {
+                    RedirectStandardOutput = true
+                };
+                using var process = Process.Start(psi);
+                process.Start();
+                var netshOutput = await process.StandardOutput.ReadToEndAsync();
+                Assert.Contains(queueName, netshOutput);
             }
         }
 
@@ -148,39 +172,6 @@ namespace Microsoft.AspNetCore.Server.HttpSys
         }
 
         [ConditionalFact]
-        public void Server_MultipleOutstandingSyncRequests_Success()
-        {
-            int requestLimit = 10;
-            int requestCount = 0;
-            TaskCompletionSource<object> tcs = new TaskCompletionSource<object>();
-
-            string address;
-            using (Utilities.CreateHttpServer(out address, httpContext =>
-            {
-                if (Interlocked.Increment(ref requestCount) == requestLimit)
-                {
-                    tcs.TrySetResult(null);
-                }
-                else
-                {
-                    tcs.Task.Wait();
-                }
-
-                return Task.FromResult(0);
-            }))
-            {
-                List<Task> requestTasks = new List<Task>();
-                for (int i = 0; i < requestLimit; i++)
-                {
-                    Task<string> requestTask = SendRequestAsync(address);
-                    requestTasks.Add(requestTask);
-                }
-
-                Assert.True(Task.WaitAll(requestTasks.ToArray(), TimeSpan.FromSeconds(60)), "Timed out");
-            }
-        }
-
-        [ConditionalFact]
         public void Server_MultipleOutstandingAsyncRequests_Success()
         {
             int requestLimit = 10;
@@ -226,7 +217,7 @@ namespace Microsoft.AspNetCore.Server.HttpSys
                 ct.Register(() => canceled.SetResult(0));
                 received.SetResult(0);
                 await aborted.Task.TimeoutAfter(interval);
-                Assert.True(ct.WaitHandle.WaitOne(interval), "CT Wait");
+                await canceled.Task.TimeoutAfter(interval);
                 Assert.True(ct.IsCancellationRequested, "IsCancellationRequested");
             }))
             {
